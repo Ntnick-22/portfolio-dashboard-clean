@@ -3,8 +3,9 @@
 # Update system
 yum update -y
 
-# Install required packages
-yum install -y python3 python3-pip git nginx
+# Install required packages and nginx from extras
+yum install -y python3 python3-pip git
+amazon-linux-extras install nginx1 -y
 
 # Create application user
 useradd -m -s /bin/bash portfolio
