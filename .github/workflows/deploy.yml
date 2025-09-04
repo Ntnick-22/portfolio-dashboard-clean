@@ -19,7 +19,7 @@ on:
 
 env:
   TF_VAR_aws_region: eu-west-1
-  TF_VAR_project_name: portfolio-dashboard-v2
+  TF_VAR_project_name: portfolio-dashboard-v3
 
 jobs:
   validate:
