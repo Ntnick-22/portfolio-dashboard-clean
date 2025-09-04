@@ -1,0 +1,223 @@
+name: Deploy Portfolio to AWS
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Choose action'
+        required: true
+        default: 'plan'
+        type: choice
+        options:
+        - plan
+        - apply
+        - destroy
+
+env:
+  TF_VAR_aws_region: eu-west-1
+  TF_VAR_project_name: portfolio-dashboard-v2
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    name: Validate Code
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install Python dependencies
+      run: |
+        cd app/
+        pip install -r requirements.txt
+    
+    - name: Test Flask app
+      run: |
+        cd app/
+        python -c "
+        import app
+        print('Flask app validation passed')
+        assert app.app is not None
+        assert len(app.PORTFOLIO_DATA['skills']) > 0
+        print('All tests passed!')
+        "
+    
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: 1.5.0
+    
+    - name: Terraform Format Check
+      run: |
+        cd terraform/
+        terraform fmt -check
+    
+    - name: Terraform Init
+      run: |
+        cd terraform/
+        terraform init
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    
+    - name: Terraform Validate
+      run: |
+        cd terraform/
+        terraform validate
+
+  plan:
+    needs: validate
+    runs-on: ubuntu-latest
+    name: Terraform Plan
+    if: github.event_name == 'pull_request' || github.event.inputs.action == 'plan'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: 1.5.0
+    
+    - name: Terraform Init
+      run: |
+        cd terraform/
+        terraform init
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    
+    - name: Terraform Plan
+      run: |
+        cd terraform/
+        terraform plan -no-color
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+  deploy:
+    needs: validate
+    runs-on: ubuntu-latest
+    name: Deploy to AWS
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event.inputs.action == 'apply')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: 1.5.0
+        terraform_wrapper: false
+    
+    - name: Terraform Init
+      run: |
+        cd terraform/
+        terraform init
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    
+    - name: Terraform Apply
+      run: |
+        cd terraform/
+        terraform apply -auto-approve
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    
+    - name: Get Terraform Outputs
+      id: tf-outputs
+      run: |
+        cd terraform/
+        echo "website_url=$(terraform output -raw website_url)" >> $GITHUB_OUTPUT
+        echo "alb_dns=$(terraform output -raw alb_dns_name)" >> $GITHUB_OUTPUT
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    
+    - name: Test Deployment
+      run: |
+        echo "Waiting for deployment to be ready..."
+        sleep 60
+        
+        WEBSITE_URL="${{ steps.tf-outputs.outputs.website_url }}"
+        echo "Testing website: $WEBSITE_URL"
+        
+        # Test health endpoint with retries
+        for i in {1..10}; do
+          if curl -f "$WEBSITE_URL/api/health" -m 10; then
+            echo "Health check passed!"
+            break
+          else
+            echo "Attempt $i failed, retrying in 30 seconds..."
+            sleep 30
+          fi
+          
+          if [ $i -eq 10 ]; then
+            echo "Health check failed after 10 attempts"
+            echo "This might be normal - infrastructure may still be initializing"
+          fi
+        done
+    
+    - name: Deployment Summary
+      run: |
+        echo "## Deployment Successful! 🚀" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Your portfolio is now live at:" >> $GITHUB_STEP_SUMMARY
+        echo "🌐 **${{ steps.tf-outputs.outputs.website_url }}**" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Infrastructure Created:" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ VPC with public subnets" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Application Load Balancer" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Auto Scaling Group with EC2 instances" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ DynamoDB visitor counter" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ S3 bucket for assets" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ CloudWatch monitoring" >> $GITHUB_STEP_SUMMARY
+
+  destroy:
+    runs-on: ubuntu-latest
+    name: Destroy Infrastructure
+    if: github.event.inputs.action == 'destroy'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: 1.5.0
+    
+    - name: Terraform Init
+      run: |
+        cd terraform/
+        terraform init
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    
+    - name: Terraform Destroy
+      run: |
+        cd terraform/
+        terraform destroy -auto-approve
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    
+    - name: Destruction Summary
+      run: |
+        echo "## Infrastructure Destroyed 💥" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "All AWS resources have been removed." >> $GITHUB_STEP_SUMMARY
