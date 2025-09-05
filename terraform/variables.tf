@@ -7,7 +7,7 @@ variable "aws_region" {
 variable "project_name" {
   description = "Name of the project"
   type        = string
-  default     = "portfolio-dashboard-v3"
+  default     = "portfolio-dashboard-v4"
 }
 
 variable "vpc_cidr" {
